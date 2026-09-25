@@ -33,6 +33,7 @@ DEFAULT_CONFIG = {
     "cooldown_after_close_seconds": 5,
     "show_notifications": True,
     "enable_stereo_patch": True,
+    "enable_fake_deafen": True,
     "relaunch_discord_after_patch": False,
     "use_native_patcher": True,
     "custom_installer_path": "",
@@ -83,10 +84,9 @@ def setup_logging():
         except Exception:
             pass
 
-    handlers = [
-        logging.FileHandler(LOG_FILE, encoding="utf-8"),
-        logging.StreamHandler(sys.stdout)
-    ]
+    handlers = [logging.FileHandler(LOG_FILE, encoding="utf-8")]
+    if sys.stdout is not None:
+        handlers.append(logging.StreamHandler(sys.stdout))
     logging.basicConfig(
         level=logging.INFO,
         format="[%(asctime)s] [%(levelname)s] %(message)s",
@@ -225,6 +225,54 @@ def ensure_vencord_dist() -> Path:
     except Exception as e:
         logging.error(f"Failed to auto-download Vencord dist files: {e}")
         return PATCHER_JS
+
+
+def get_fake_deafen_payload() -> str:
+    """Reads the FakeDeafen+ script from tools/fake_deafen_plus.js."""
+    js_file = Path(__file__).parent / "tools" / "fake_deafen_plus.js"
+    if js_file.exists():
+        return js_file.read_text(encoding="utf-8")
+    return ""
+
+
+def inject_fake_deafen(dist_dir: Path) -> bool:
+    """Injects FakeDeafen+ into Vencord's renderer.js so it runs automatically in Discord."""
+    renderer_path = dist_dir / "renderer.js"
+    if not renderer_path.exists():
+        return False
+    try:
+        content = renderer_path.read_text(encoding="utf-8")
+        marker = "/* === VencordGracefulPatch: FakeDeafen+ Integration === */"
+        if marker in content:
+            return True
+        payload = get_fake_deafen_payload()
+        if not payload:
+            return False
+        renderer_path.write_text(content.rstrip() + "\n\n" + marker + "\n" + payload + "\n", encoding="utf-8")
+        logging.info("Injected FakeDeafen+ into Vencord renderer.js")
+        return True
+    except Exception as e:
+        logging.error(f"Failed to inject FakeDeafen+: {e}")
+        return False
+
+
+def remove_fake_deafen(dist_dir: Path) -> bool:
+    """Removes FakeDeafen+ from Vencord's renderer.js if disabled."""
+    renderer_path = dist_dir / "renderer.js"
+    if not renderer_path.exists():
+        return False
+    try:
+        content = renderer_path.read_text(encoding="utf-8")
+        marker = "/* === VencordGracefulPatch: FakeDeafen+ Integration === */"
+        if marker in content:
+            clean = content.split(marker)[0].rstrip()
+            renderer_path.write_text(clean + "\n", encoding="utf-8")
+            logging.info("Removed FakeDeafen+ from renderer.js")
+            return True
+        return False
+    except Exception:
+        return False
+
 
 def patch_version_natively(version_dir: Path) -> bool:
     """
@@ -420,6 +468,12 @@ def run_single_check(config: dict, waiting_state: dict) -> None:
             else:
                 logging.warning(f"[{display_name}] Some Vencord versions could not be patched yet.")
 
+        # Ensure FakeDeafen+ is maintained in Vencord if enabled
+        if config.get("enable_fake_deafen", True):
+            inject_fake_deafen(VENCORD_DIST_DIR)
+        else:
+            remove_fake_deafen(VENCORD_DIST_DIR)
+
         # 2. Patch Stereo Voice Module if enabled
         if stereo_enabled and unpatched_voice:
             logging.info(f"[{display_name}] Applying dynamic Stereo Voice patch...")
@@ -542,6 +596,14 @@ def print_status():
                     else:
                         v_str = str(v_state)
                     print(f"  Voice Engine: {v_str}")
+            except Exception:
+                pass
+
+        if config.get("enable_fake_deafen", True):
+            renderer_path = VENCORD_DIST_DIR / "renderer.js"
+            try:
+                injected = renderer_path.exists() and "FakeDeafen+ Integration" in renderer_path.read_text(encoding="utf-8")
+                print(f"  FakeDeafen+ : {'ACTIVE (Button & F8 / Ctrl+Shift+Q Active)' if injected else 'Not Injected'}")
             except Exception:
                 pass
         print()
