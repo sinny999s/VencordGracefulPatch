@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.log
+.venv/
+env/
+venv/
+
+# Windows
+*.vbs
+Thumbs.db
+Desktop.ini
+
+# App Data logs
+patcher.log
+patcher.log.old
+
+# Downloaded Binaries
+VencordInstallerCli.exe
+VencordInstaller.exe
