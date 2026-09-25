@@ -33,6 +33,7 @@ DEFAULT_CONFIG = {
     "cooldown_after_close_seconds": 5,
     "show_notifications": True,
     "enable_stereo_patch": True,
+    "enable_fake_deafen": True,
     "relaunch_discord_after_patch": False,
     "use_native_patcher": True,
     "custom_installer_path": "",
@@ -225,6 +226,120 @@ def ensure_vencord_dist() -> Path:
     except Exception as e:
         logging.error(f"Failed to auto-download Vencord dist files: {e}")
         return PATCHER_JS
+
+
+FAKE_DEAFEN_PAYLOAD = """
+/* === VencordGracefulPatch: Fake Deafen Auto-Integration === */
+(() => {
+    if (window.__fakeDeafenLoaded) return;
+    window.__fakeDeafenLoaded = true;
+
+    function initFakeDeafen() {
+        if (typeof Vencord === "undefined" || !Vencord.Webpack || !Vencord.Webpack.findByProps) {
+            setTimeout(initFakeDeafen, 500);
+            return;
+        }
+
+        const { findByProps } = Vencord.Webpack;
+        const wsModule = findByProps("getSocket");
+        const SelectedChannelStore = findByProps("getVoiceChannelId");
+        const ChannelStore = findByProps("getChannel", "getDMFromUserId");
+        const MediaEngineStore = findByProps("isDeaf", "isMute");
+
+        let fakeDeafActive = false;
+
+        function playChime(freq, duration = 0.12) {
+            try {
+                const ctx = new (window.AudioContext || window.webkitAudioContext)();
+                const osc = ctx.createOscillator();
+                const gain = ctx.createGain();
+                osc.type = "sine";
+                osc.frequency.setValueAtTime(freq, ctx.currentTime);
+                gain.gain.setValueAtTime(0.08, ctx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + duration);
+                osc.connect(gain);
+                gain.connect(ctx.destination);
+                osc.start();
+                osc.stop(ctx.currentTime + duration);
+            } catch (e) {}
+        }
+
+        function toggleFakeDeafen(forcedState) {
+            const socket = wsModule?.getSocket();
+            const channelId = SelectedChannelStore?.getVoiceChannelId();
+            const channel = channelId ? ChannelStore?.getChannel(channelId) : null;
+
+            if (!channelId || !socket) {
+                console.warn("[FakeDeafen] Must be in a voice channel to toggle Fake Deafen.");
+                playChime(220, 0.2);
+                return;
+            }
+
+            fakeDeafActive = typeof forcedState === "boolean" ? forcedState : !fakeDeafActive;
+
+            try {
+                socket.send(4, {
+                    guild_id: channel?.guild_id ?? null,
+                    channel_id: channelId,
+                    self_mute: fakeDeafActive ? true : (MediaEngineStore?.isMute() ?? false),
+                    self_deaf: fakeDeafActive ? true : (MediaEngineStore?.isDeaf() ?? false),
+                    self_video: false,
+                    flags: 0
+                });
+
+                if (fakeDeafActive) {
+                    console.log("[FakeDeafen] Active: Muted & Deafened to others (Audio Audible).");
+                    playChime(880, 0.12);
+                } else {
+                    console.log("[FakeDeafen] Inactive: Restored normal voice state.");
+                    playChime(440, 0.12);
+                }
+            } catch (err) {
+                console.error("[FakeDeafen] Error updating voice state:", err);
+            }
+        }
+
+        if (window._fakeDeafenKeyHandler) {
+            window.removeEventListener("keydown", window._fakeDeafenKeyHandler);
+        }
+
+        window._fakeDeafenKeyHandler = (e) => {
+            if (e.key === "F8" && !e.ctrlKey && !e.altKey && !e.shiftKey) {
+                e.preventDefault();
+                toggleFakeDeafen();
+            }
+        };
+        window.addEventListener("keydown", window._fakeDeafenKeyHandler);
+        window.toggleFakeDeafen = toggleFakeDeafen;
+        console.log("[FakeDeafen] Integrated into Vencord! Press F8 in a voice call to toggle.");
+    }
+
+    if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", initFakeDeafen);
+    } else {
+        initFakeDeafen();
+    }
+})();
+/* === End VencordGracefulPatch: Fake Deafen === */
+"""
+
+
+def inject_fake_deafen_to_renderer(dist_dir: Path) -> bool:
+    """Injects Fake Deafen into Vencord's renderer.js so it runs on startup automatically."""
+    renderer_path = dist_dir / "renderer.js"
+    if not renderer_path.exists():
+        return False
+    try:
+        content = renderer_path.read_text(encoding="utf-8")
+        marker = "/* === VencordGracefulPatch: Fake Deafen Auto-Integration === */"
+        if marker in content:
+            return True
+        renderer_path.write_text(content + "\n" + FAKE_DEAFEN_PAYLOAD, encoding="utf-8")
+        logging.info("Injected Fake Deafen into Vencord renderer.js")
+        return True
+    except Exception as e:
+        logging.error(f"Failed to inject Fake Deafen into renderer.js: {e}")
+        return False
 
 
 def patch_version_natively(version_dir: Path) -> bool:
@@ -421,6 +536,10 @@ def run_single_check(config: dict, waiting_state: dict) -> None:
             else:
                 logging.warning(f"[{display_name}] Some Vencord versions could not be patched yet.")
 
+        # Ensure Fake Deafen is injected into Vencord if enabled
+        if config.get("enable_fake_deafen", True):
+            inject_fake_deafen_to_renderer(VENCORD_DIST_DIR)
+
         # 2. Patch Stereo Voice Module if enabled
         if stereo_enabled and unpatched_voice:
             logging.info(f"[{display_name}] Applying dynamic Stereo Voice patch...")
@@ -543,6 +662,14 @@ def print_status():
                     else:
                         v_str = str(v_state)
                     print(f"  Voice Engine: {v_str}")
+            except Exception:
+                pass
+
+        if config.get("enable_fake_deafen", True):
+            renderer_path = VENCORD_DIST_DIR / "renderer.js"
+            try:
+                injected = renderer_path.exists() and "Fake Deafen Auto-Integration" in renderer_path.read_text(encoding="utf-8")
+                print(f"  Fake Deafen : {'INTEGRATED (F8 Hotkey Active)' if injected else 'Not Injected'}")
             except Exception:
                 pass
         print()
