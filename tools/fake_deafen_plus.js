@@ -3,13 +3,11 @@
  * Built for VencordGracefulPatch
  *
  * Appears deafened & muted to everyone else in the voice channel,
+ * suppresses the speaking ring (so others never see you talking),
  * while allowing you to secretly hear incoming audio and speak live.
  *
- * Placed cleanly inside Discord's floating call toolbar at the bottom center,
- * right next to the Mute/Microphone button.
- *
  * Controls:
- * - Click the FakeDeafen+ button in the center call toolbar
+ * - Click the FakeDeafen+ button in the bottom-middle call toolbar (next to Mic)
  * - Or press F8 / Ctrl + Shift + Q anytime Discord is focused
  */
 
@@ -19,12 +17,14 @@
     document.getElementById("vc-fake-deafen-slot")?.remove();
     document.getElementById("vc-fake-deafen-style")?.remove();
     document.getElementById("vc-fake-deafen-tooltip")?.remove();
+    document.getElementById("vc-fake-deafen-hide-ring")?.remove();
 
     window.__fakeDeafenPlusLoaded = true;
 
     const BUTTON_ID = "vc-fake-deafen-call-btn";
     const STYLE_ID = "vc-fake-deafen-style";
     const TOOLTIP_ID = "vc-fake-deafen-tooltip";
+    const RING_STYLE_ID = "vc-fake-deafen-hide-ring";
 
     let active = false;
     let activeChannelId = null;
@@ -73,9 +73,10 @@
         const SelectedChannelStore = Common.SelectedChannelStore || findByProps("getVoiceChannelId");
         const ChannelStore = Common.ChannelStore || findByProps("getChannel", "getDMFromUserId");
         const MediaEngineStore = Common.MediaEngineStore || findByProps("isDeaf", "isMute");
+        const UserStore = Common.UserStore || findByProps("getCurrentUser");
         const wsModule = findByProps("getSocket");
 
-        return { SelectedChannelStore, ChannelStore, MediaEngineStore, wsModule, Common };
+        return { SelectedChannelStore, ChannelStore, MediaEngineStore, UserStore, wsModule, Common };
     }
 
     function getVoiceChannelId() {
@@ -105,10 +106,88 @@
         }
     }
 
+    function updateSpeakingRingSuppression(enable) {
+        let style = document.getElementById(RING_STYLE_ID);
+        if (!enable) {
+            style?.remove();
+            return;
+        }
+        if (!style) {
+            style = document.createElement("style");
+            style.id = RING_STYLE_ID;
+            document.head.appendChild(style);
+        }
+
+        const { UserStore } = getStores();
+        const currentUserId = UserStore?.getCurrentUser?.()?.id;
+
+        if (currentUserId) {
+            style.textContent = `
+                [data-user-id="${currentUserId}"] [class*="speaking"],
+                [data-user-id="${currentUserId}"][class*="speaking"],
+                [data-user-id="${currentUserId}"] [class*="avatarSpeaking"],
+                [data-user-id="${currentUserId}"][class*="avatarSpeaking"],
+                [data-user-id="${currentUserId}"] [class*="borderSpeaking"],
+                [data-user-id="${currentUserId}"][class*="borderSpeaking"] {
+                    box-shadow: none !important;
+                    border-color: transparent !important;
+                    outline: none !important;
+                }
+            `;
+        } else {
+            style.textContent = `
+                [class*="avatarWrapper_"] [class*="speaking"],
+                [class*="voiceUser_"][class*="selected_"] [class*="speaking"] {
+                    box-shadow: none !important;
+                    border-color: transparent !important;
+                    outline: none !important;
+                }
+            `;
+        }
+    }
+
+    // Intercept Voice WebSocket Opcode 5 (Speaking) so Discord NEVER broadcasts a speaking ring to others
+    if (!window._origWebSocketSend) {
+        window._origWebSocketSend = WebSocket.prototype.send;
+        WebSocket.prototype.send = function (data) {
+            let outgoing = data;
+            if (active && typeof outgoing === "string") {
+                try {
+                    if (outgoing.charCodeAt(0) === 123) { // starts with '{'
+                        const parsed = JSON.parse(outgoing);
+                        let modified = false;
+
+                        // Voice Gateway Opcode 5: Speaking
+                        // Suppress speaking state to 0 so other people NEVER see your speaking ring!
+                        if (parsed.op === 5 && parsed.d) {
+                            if (parsed.d.speaking) {
+                                parsed.d.speaking = 0;
+                                modified = true;
+                            }
+                        }
+                        // Main Gateway Opcode 4: Voice State Update
+                        // Enforce self_mute and self_deaf
+                        else if (parsed.op === 4 && parsed.d) {
+                            parsed.d.self_mute = true;
+                            parsed.d.self_deaf = true;
+                            modified = true;
+                        }
+
+                        if (modified) {
+                            outgoing = JSON.stringify(parsed);
+                        }
+                    }
+                } catch (e) {}
+            }
+            return window._origWebSocketSend.apply(this, [outgoing]);
+        };
+    }
+
     function deactivateForChannelChange() {
         if (!active) return;
         active = false;
         activeChannelId = null;
+        updateSpeakingRingSuppression(false);
         scheduleButtonUpdate();
         showNotification("FakeDeafen+ deactivated (channel changed).");
     }
@@ -196,17 +275,21 @@
             }
             active = true;
             activeChannelId = channelId;
+            updateSpeakingRingSuppression(true);
+
             if (!refreshVoiceState(true)) {
                 active = false;
                 activeChannelId = null;
+                updateSpeakingRingSuppression(false);
                 scheduleButtonUpdate();
                 return false;
             }
             playToggleSound(true);
-            showNotification("FakeDeafen+ ON — Deafened to others (Microphone & Audio Active)");
+            showNotification("FakeDeafen+ ON — Deafened (Speaking Ring Hidden, Mic Transmitting)");
         } else {
             active = false;
             activeChannelId = null;
+            updateSpeakingRingSuppression(false);
             refreshVoiceState(false);
             playToggleSound(false);
             showNotification("FakeDeafen+ OFF — Restored normal voice state");
@@ -253,7 +336,7 @@
             #${TOOLTIP_ID} {
                 position: fixed;
                 z-index: 10000;
-                max-width: 260px;
+                max-width: 280px;
                 padding: 8px 10px;
                 border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.08));
                 border-radius: 5px;
@@ -289,7 +372,7 @@
         hideTooltip();
         const tooltip = document.createElement("div");
         tooltip.id = TOOLTIP_ID;
-        tooltip.textContent = active ? "FakeDeafen+ (Active — Hearing & Speaking)" : "FakeDeafen+ (Appear Deafened)";
+        tooltip.textContent = active ? "FakeDeafen+ (Active — Silent / Hearing & Speaking)" : "FakeDeafen+ (Appear Deafened & Hide Ring)";
         document.body.appendChild(tooltip);
 
         const bRect = button.getBoundingClientRect();
@@ -443,5 +526,5 @@
         patchCurrentSocket();
     }
 
-    console.log("%c[FakeDeafen+] Ready! Button positioned in middle bottom call toolbar next to Mic (Hotkey: F8 or Ctrl+Shift+Q).", "color: #57F287; font-weight: bold;");
+    console.log("%c[FakeDeafen+] Ready with Speaking Ring Suppression active!", "color: #57F287; font-weight: bold;");
 })();
