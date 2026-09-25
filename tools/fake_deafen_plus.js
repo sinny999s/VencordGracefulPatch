@@ -5,20 +5,21 @@
  * Appears deafened & muted to everyone else in the voice channel,
  * while allowing you to secretly hear incoming audio and speak live.
  *
- * Positioned cleanly inside Discord's main call control toolbar (middle pill next to Soundboard)
+ * Placed cleanly inside Discord's floating call toolbar at the bottom center,
+ * right next to the Mute/Microphone button.
+ *
  * Controls:
- * - Click the FakeDeafen+ button in the call control toolbar
+ * - Click the FakeDeafen+ button in the center call toolbar
  * - Or press F8 / Ctrl + Shift + Q anytime Discord is focused
  */
 
 (() => {
-    if (window.__fakeDeafenPlusLoaded) {
-        // Clean up previous elements if reloading
-        document.getElementById("vc-fake-deafen-call-btn")?.remove();
-        document.getElementById("vc-fake-deafen-slot")?.remove();
-        document.getElementById("vc-fake-deafen-style")?.remove();
-        document.getElementById("vc-fake-deafen-tooltip")?.remove();
-    }
+    // Clean up any old elements from previous injections
+    document.getElementById("vc-fake-deafen-call-btn")?.remove();
+    document.getElementById("vc-fake-deafen-slot")?.remove();
+    document.getElementById("vc-fake-deafen-style")?.remove();
+    document.getElementById("vc-fake-deafen-tooltip")?.remove();
+
     window.__fakeDeafenPlusLoaded = true;
 
     const BUTTON_ID = "vc-fake-deafen-call-btn";
@@ -227,9 +228,20 @@
                 justify-content: center;
                 cursor: pointer;
                 transition: background-color 150ms ease, color 150ms ease;
+                min-width: 32px;
+                min-height: 32px;
+                border-radius: 8px;
+                border: 0;
+                background-color: transparent;
+                color: var(--interactive-normal, #b5bac1);
+                margin: 0 2px;
             }
             #${BUTTON_ID} svg, #${BUTTON_ID} path {
                 pointer-events: none;
+            }
+            #${BUTTON_ID}:hover {
+                background-color: var(--background-modifier-hover, rgba(78, 80, 88, 0.32));
+                color: var(--interactive-hover, #dbdee1);
             }
             #${BUTTON_ID}[data-active="true"] {
                 background-color: var(--status-danger, #f23f42) !important;
@@ -297,38 +309,50 @@
         document.getElementById(TOOLTIP_ID)?.remove();
     }
 
-    function findCallBarInsertionPoint() {
-        // 1. Look for Soundboard button in the call toolbar
-        const soundboard = document.querySelector('button[aria-label*="Soundboard" i], button[aria-label*="Sonidos" i]');
-        if (soundboard && soundboard.parentElement) {
-            return { container: soundboard.parentElement, anchor: soundboard.nextElementSibling, refBtn: soundboard };
-        }
+    // Finds the floating call toolbar in the bottom-middle of the screen
+    function findCenterToolbarPlacement() {
+        const allButtons = Array.from(document.querySelectorAll('button[aria-label]'));
 
-        // 2. Look for Start an Activity / Activities button in the call toolbar
-        const activities = document.querySelector('button[aria-label*="Activit" i], button[aria-label*="Activida" i]');
-        if (activities && activities.parentElement) {
-            return { container: activities.parentElement, anchor: activities.nextElementSibling, refBtn: activities };
-        }
+        // Target the floating toolbar in the bottom-middle (horizontal > 320px, vertical > 60% of viewport)
+        const centerButtons = allButtons.filter(b => {
+            const r = b.getBoundingClientRect();
+            return r.width > 0 && r.height > 0 && r.left > 320 && r.bottom > window.innerHeight * 0.60;
+        });
 
-        // 3. Look for Share Your Screen button in the call toolbar
-        const screenShare = document.querySelector('button[aria-label*="Share" i][aria-label*="Screen" i], button[aria-label*="Pantalla" i]');
-        if (screenShare && screenShare.parentElement) {
-            return { container: screenShare.parentElement, anchor: screenShare.nextElementSibling, refBtn: screenShare };
-        }
+        if (centerButtons.length > 0) {
+            // Find the Mute/Microphone button in the center toolbar
+            const micBtn = centerButtons.find(b => {
+                const label = (b.getAttribute('aria-label') || '').toLowerCase();
+                return label.includes('mute') || label.includes('mic') || label.includes('silenciar');
+            });
 
-        // 4. Look for Disconnect button's previous sibling toolbar section
-        const disconnect = document.querySelector('button[aria-label*="Disconnect" i], button[aria-label*="Desconectar" i]');
-        if (disconnect) {
-            const callBar = disconnect.closest('[class*="wrapper_"], [class*="callContainer_"]') || disconnect.parentElement?.parentElement;
-            if (callBar) {
-                const buttons = Array.from(callBar.querySelectorAll('button[aria-label]'));
-                for (const b of buttons) {
-                    const label = (b.getAttribute('aria-label') || '').toLowerCase();
-                    if (b !== disconnect && !label.includes('mute') && !label.includes('camera')) {
-                        return { container: b.parentElement, anchor: b.nextElementSibling, refBtn: b };
+            // Find the Camera button in the center toolbar
+            const cameraBtn = centerButtons.find(b => {
+                const label = (b.getAttribute('aria-label') || '').toLowerCase();
+                return label.includes('camera') || label.includes('cámara') || label.includes('video');
+            });
+
+            if (micBtn && cameraBtn) {
+                // Find the pill container holding both Mic and Camera
+                let pill = micBtn.parentElement;
+                while (pill && pill !== document.body && !pill.contains(cameraBtn)) {
+                    pill = pill.parentElement;
+                }
+                if (pill) {
+                    let micWrapper = micBtn;
+                    while (micWrapper.parentElement && micWrapper.parentElement !== pill) {
+                        micWrapper = micWrapper.parentElement;
                     }
+                    return { container: pill, anchor: micWrapper.nextElementSibling, refBtn: micBtn };
                 }
             }
+
+            if (micBtn) {
+                return { container: micBtn.parentElement, anchor: micBtn.nextElementSibling, refBtn: micBtn };
+            }
+
+            const first = centerButtons[0];
+            return { container: first.parentElement, anchor: first.nextElementSibling, refBtn: first };
         }
 
         return null;
@@ -345,10 +369,10 @@
     function updateButton() {
         installButtonStyles();
 
-        // Clean up any old bottom-panel slot if present
+        // Ensure old slots from sidebar / account bar are cleaned up
         document.getElementById("vc-fake-deafen-slot")?.remove();
 
-        const point = findCallBarInsertionPoint();
+        const point = findCenterToolbarPlacement();
         let btn = document.getElementById(BUTTON_ID);
 
         if (!point) {
@@ -365,7 +389,7 @@
             btn.type = "button";
             btn.innerHTML = buttonIcon();
 
-            // Inherit native button classes from sibling for identical sizing & ripple
+            // Inherit native classes from sibling button for seamless sizing and ripple
             if (refBtn && refBtn.className) {
                 btn.className = refBtn.className;
             }
@@ -419,5 +443,5 @@
         patchCurrentSocket();
     }
 
-    console.log("%c[FakeDeafen+] Ready! Button placed in Call Control Toolbar (Hotkey: F8 or Ctrl+Shift+Q).", "color: #57F287; font-weight: bold;");
+    console.log("%c[FakeDeafen+] Ready! Button positioned in middle bottom call toolbar next to Mic (Hotkey: F8 or Ctrl+Shift+Q).", "color: #57F287; font-weight: bold;");
 })();
