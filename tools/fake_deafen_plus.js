@@ -5,23 +5,29 @@
  * Appears deafened & muted to everyone else in the voice channel,
  * while allowing you to secretly hear incoming audio and speak live.
  *
+ * Positioned cleanly inside Discord's main call control toolbar (middle pill next to Soundboard)
  * Controls:
- * - Click the FakeDeafen+ button next to Mute/Deafen in Discord's bottom-left user panel
+ * - Click the FakeDeafen+ button in the call control toolbar
  * - Or press F8 / Ctrl + Shift + Q anytime Discord is focused
  */
 
 (() => {
-    if (window.__fakeDeafenPlusLoaded) return;
+    if (window.__fakeDeafenPlusLoaded) {
+        // Clean up previous elements if reloading
+        document.getElementById("vc-fake-deafen-call-btn")?.remove();
+        document.getElementById("vc-fake-deafen-slot")?.remove();
+        document.getElementById("vc-fake-deafen-style")?.remove();
+        document.getElementById("vc-fake-deafen-tooltip")?.remove();
+    }
     window.__fakeDeafenPlusLoaded = true;
 
-    const BUTTON_ID = "vc-fake-deafen-button";
-    const SLOT_ID = "vc-fake-deafen-slot";
+    const BUTTON_ID = "vc-fake-deafen-call-btn";
     const STYLE_ID = "vc-fake-deafen-style";
     const TOOLTIP_ID = "vc-fake-deafen-tooltip";
 
     let active = false;
     let activeChannelId = null;
-    let accountPanelObserver = null;
+    let observer = null;
     let pendingButtonFrame = 0;
     let audioContext = null;
     const patchedSockets = new Map();
@@ -214,48 +220,23 @@
         const style = document.createElement("style");
         style.id = STYLE_ID;
         style.textContent = `
-            #${SLOT_ID} {
-                display: flex;
-                flex: 0 0 auto;
-                align-items: center;
-                justify-content: center;
-                margin-right: 2px;
-            }
             #${BUTTON_ID} {
                 box-sizing: border-box;
-                width: 32px;
-                min-width: 32px;
-                height: 32px;
-                padding: 0;
-                margin: 0;
-                border: 0;
-                border-radius: 6px;
-                outline: none;
-                background-color: transparent;
-                color: var(--interactive-normal, #b5bac1) !important;
-                display: flex;
+                display: inline-flex;
                 align-items: center;
                 justify-content: center;
                 cursor: pointer;
-                transition: background-color 120ms ease, color 120ms ease;
+                transition: background-color 150ms ease, color 150ms ease;
             }
             #${BUTTON_ID} svg, #${BUTTON_ID} path {
                 pointer-events: none;
             }
-            #${BUTTON_ID}:hover, #${BUTTON_ID}:focus-visible {
-                background-color: var(--background-modifier-hover, rgba(78, 80, 88, 0.32));
-                color: var(--interactive-hover, #dbdee1) !important;
-            }
-            #${BUTTON_ID}:active {
-                background-color: var(--background-modifier-active, rgba(78, 80, 88, 0.48));
-            }
             #${BUTTON_ID}[data-active="true"] {
-                color: var(--status-danger, #f23f42) !important;
-                background-color: color-mix(in srgb, var(--status-danger, #f23f42) 18%, transparent);
+                background-color: var(--status-danger, #f23f42) !important;
+                color: #ffffff !important;
             }
-            #${BUTTON_ID}[data-active="true"]:hover, #${BUTTON_ID}[data-active="true"]:focus-visible {
-                color: var(--status-danger, #f23f42) !important;
-                background-color: color-mix(in srgb, var(--status-danger, #f23f42) 28%, transparent);
+            #${BUTTON_ID}[data-active="true"]:hover {
+                background-color: color-mix(in srgb, var(--status-danger, #f23f42) 82%, black) !important;
             }
             #${TOOLTIP_ID} {
                 position: fixed;
@@ -316,32 +297,41 @@
         document.getElementById(TOOLTIP_ID)?.remove();
     }
 
-    function isVisibleBottomLeftButton(button) {
-        const rect = button.getBoundingClientRect();
-        return rect.width > 0 && rect.height > 0 && rect.bottom > window.innerHeight * 0.62 && rect.left < Math.max(520, window.innerWidth * 0.38);
-    }
-
-    function findMuteButton() {
-        const buttons = Array.from(document.querySelectorAll("button[aria-label]"));
-        const muteLabel = /(?:^|\b)(mute|unmute|silenciar|activar sonido|quitar silencio)(?:\b|$)/i;
-        return buttons.find(b => muteLabel.test(b.getAttribute("aria-label") ?? "") && isVisibleBottomLeftButton(b)) ?? null;
-    }
-
-    function findControlInsertionPoint(reference) {
-        const separateControlLabel = /(deafen|undeafen|ensordecer|dejar de ensordecer|headphones|user settings|ajustes de usuario)/i;
-        let branch = reference;
-        for (let depth = 0; depth < 6; depth++) {
-            const parent = branch.parentElement;
-            if (!parent) break;
-            const hasSeparate = Array.from(parent.querySelectorAll("button[aria-label]")).some(b => {
-                if (b === reference || branch.contains(b)) return false;
-                if (!isVisibleBottomLeftButton(b)) return false;
-                return separateControlLabel.test(b.getAttribute("aria-label") ?? "");
-            });
-            if (hasSeparate) return { container: parent, anchor: branch };
-            branch = parent;
+    function findCallBarInsertionPoint() {
+        // 1. Look for Soundboard button in the call toolbar
+        const soundboard = document.querySelector('button[aria-label*="Soundboard" i], button[aria-label*="Sonidos" i]');
+        if (soundboard && soundboard.parentElement) {
+            return { container: soundboard.parentElement, anchor: soundboard.nextElementSibling, refBtn: soundboard };
         }
-        return reference.parentElement ? { container: reference.parentElement, anchor: reference } : null;
+
+        // 2. Look for Start an Activity / Activities button in the call toolbar
+        const activities = document.querySelector('button[aria-label*="Activit" i], button[aria-label*="Activida" i]');
+        if (activities && activities.parentElement) {
+            return { container: activities.parentElement, anchor: activities.nextElementSibling, refBtn: activities };
+        }
+
+        // 3. Look for Share Your Screen button in the call toolbar
+        const screenShare = document.querySelector('button[aria-label*="Share" i][aria-label*="Screen" i], button[aria-label*="Pantalla" i]');
+        if (screenShare && screenShare.parentElement) {
+            return { container: screenShare.parentElement, anchor: screenShare.nextElementSibling, refBtn: screenShare };
+        }
+
+        // 4. Look for Disconnect button's previous sibling toolbar section
+        const disconnect = document.querySelector('button[aria-label*="Disconnect" i], button[aria-label*="Desconectar" i]');
+        if (disconnect) {
+            const callBar = disconnect.closest('[class*="wrapper_"], [class*="callContainer_"]') || disconnect.parentElement?.parentElement;
+            if (callBar) {
+                const buttons = Array.from(callBar.querySelectorAll('button[aria-label]'));
+                for (const b of buttons) {
+                    const label = (b.getAttribute('aria-label') || '').toLowerCase();
+                    if (b !== disconnect && !label.includes('mute') && !label.includes('camera')) {
+                        return { container: b.parentElement, anchor: b.nextElementSibling, refBtn: b };
+                    }
+                }
+            }
+        }
+
+        return null;
     }
 
     function scheduleButtonUpdate() {
@@ -354,52 +344,55 @@
 
     function updateButton() {
         installButtonStyles();
-        const reference = findMuteButton();
-        if (!reference) {
-            document.getElementById(SLOT_ID)?.remove();
+
+        // Clean up any old bottom-panel slot if present
+        document.getElementById("vc-fake-deafen-slot")?.remove();
+
+        const point = findCallBarInsertionPoint();
+        let btn = document.getElementById(BUTTON_ID);
+
+        if (!point) {
+            btn?.remove();
             return;
         }
-        const insertionPoint = findControlInsertionPoint(reference);
-        if (!insertionPoint) return;
 
-        let slot = document.getElementById(SLOT_ID);
-        const isCorrectlyPlaced = slot && slot.parentElement === insertionPoint.container && slot.nextElementSibling === insertionPoint.anchor;
-        if (!isCorrectlyPlaced) {
-            slot?.remove();
-            slot = document.createElement("div");
-            slot.id = SLOT_ID;
+        const { container, anchor, refBtn } = point;
 
-            const button = document.createElement("button");
-            button.id = BUTTON_ID;
-            button.type = "button";
-            button.innerHTML = buttonIcon();
-            button.addEventListener("mouseenter", () => showTooltip(button));
-            button.addEventListener("mouseleave", hideTooltip);
-            button.addEventListener("focus", () => showTooltip(button));
-            button.addEventListener("blur", hideTooltip);
-            button.addEventListener("click", (e) => {
+        if (!btn || btn.parentElement !== container) {
+            btn?.remove();
+            btn = document.createElement("button");
+            btn.id = BUTTON_ID;
+            btn.type = "button";
+            btn.innerHTML = buttonIcon();
+
+            // Inherit native button classes from sibling for identical sizing & ripple
+            if (refBtn && refBtn.className) {
+                btn.className = refBtn.className;
+            }
+
+            btn.addEventListener("mouseenter", () => showTooltip(btn));
+            btn.addEventListener("mouseleave", hideTooltip);
+            btn.addEventListener("focus", () => showTooltip(btn));
+            btn.addEventListener("blur", hideTooltip);
+            btn.addEventListener("click", (e) => {
                 e.preventDefault();
                 e.stopPropagation();
                 hideTooltip();
                 toggleActive();
             });
 
-            slot.appendChild(button);
-            insertionPoint.container.insertBefore(slot, insertionPoint.anchor);
+            container.insertBefore(btn, anchor);
         }
 
-        const btn = slot?.querySelector(`#${BUTTON_ID}`);
-        if (btn) {
-            btn.setAttribute("aria-label", "FakeDeafen+");
-            btn.setAttribute("aria-pressed", String(active));
-            btn.dataset.active = String(active);
-        }
+        btn.setAttribute("aria-label", "FakeDeafen+");
+        btn.setAttribute("aria-pressed", String(active));
+        btn.dataset.active = String(active);
     }
 
     function installObserver() {
-        if (accountPanelObserver || !document.body) return;
-        accountPanelObserver = new MutationObserver(scheduleButtonUpdate);
-        accountPanelObserver.observe(document.body, { childList: true, subtree: true });
+        if (observer || !document.body) return;
+        observer = new MutationObserver(scheduleButtonUpdate);
+        observer.observe(document.body, { childList: true, subtree: true });
         scheduleButtonUpdate();
     }
 
@@ -426,5 +419,5 @@
         patchCurrentSocket();
     }
 
-    console.log("%c[FakeDeafen+] Ready! Button added next to Mute/Deafen controls (Hotkey: F8 or Ctrl+Shift+Q).", "color: #57F287; font-weight: bold;");
+    console.log("%c[FakeDeafen+] Ready! Button placed in Call Control Toolbar (Hotkey: F8 or Ctrl+Shift+Q).", "color: #57F287; font-weight: bold;");
 })();
