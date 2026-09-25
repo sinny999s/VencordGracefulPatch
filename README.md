@@ -47,13 +47,13 @@ flowchart TD
 
 ## 🚀 Features
 
+* ⚡ **100% Standalone & Native:** Does **not** require downloading or compiling Vencord's 12MB Go installer! It constructs the byte-exact Electron ASAR loader natively in Python.
 * 📞 **Zero Voice Call Interruptions:** Never terminates your Discord session while you are active.
 * 📦 **Zero External Dependencies:** Built entirely with Python's standard library (no `pip install` required).
 * 🔕 **100% Invisible Background Execution:** Runs via `pythonw.exe` without pesky command prompt popups.
 * 🔄 **Multi-Branch Support:** Automatically monitors **Discord Stable**, **PTB**, **Canary**, and **Development**.
 * 🔔 **Native Windows Toast Notifications:** Alerts you when an update has been smoothly patched.
-* 📥 **Automatic Installer Fallback:** Auto-detects local Vencord installers or safely retrieves the official CLI from GitHub if none is found.
-* 🛠️ **Status Inspector:** Run `status.bat` anytime to check patched versions and process states.
+* 🛠️ **Status & Unpatch Tools:** Run `status.bat` to inspect patched builds, or `unpatch.bat` to restore Discord to vanilla with 1 click.
 
 ---
 

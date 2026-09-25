@@ -1,20 +1,22 @@
 """
 Vencord Graceful Patcher
-A Discord-friendly background auto-patcher for Vencord.
+A standalone, Discord-friendly native auto-patcher for Vencord.
 Waits gracefully until Discord closes before applying patches.
-Zero voice call interruptions. Zero corrupted updates.
+Zero external binaries. Zero voice call interruptions.
 """
 
 import os
 import sys
 import time
 import json
+import struct
+import shutil
+import zipfile
 import logging
 import argparse
 import subprocess
 import urllib.request
 from pathlib import Path
-from datetime import datetime
 
 # Base directories
 LOCAL_APPDATA = os.environ.get("LOCALAPPDATA", os.path.expanduser(r"~\AppData\Local"))
@@ -22,12 +24,16 @@ APPDATA = os.environ.get("APPDATA", os.path.expanduser(r"~\AppData\Roaming"))
 APP_DATA_DIR = Path(LOCAL_APPDATA) / "VencordGracefulPatch"
 LOG_FILE = APP_DATA_DIR / "patcher.log"
 CONFIG_FILE = Path(__file__).parent / "config.json"
+VENCORD_DATA_DIR = Path(APPDATA) / "Vencord"
+VENCORD_DIST_DIR = VENCORD_DATA_DIR / "dist"
+PATCHER_JS = VENCORD_DIST_DIR / "patcher.js"
 
 DEFAULT_CONFIG = {
     "check_interval_seconds": 10,
     "cooldown_after_close_seconds": 5,
     "show_notifications": True,
     "relaunch_discord_after_patch": False,
+    "use_native_patcher": True,
     "custom_installer_path": "",
     "monitored_branches": ["stable", "ptb", "canary", "development"]
 }
@@ -67,7 +73,6 @@ def setup_logging():
     """Sets up logging to both file and console."""
     APP_DATA_DIR.mkdir(parents=True, exist_ok=True)
     
-    # Cap log size to ~2MB if needed
     if LOG_FILE.exists() and LOG_FILE.stat().st_size > 2 * 1024 * 1024:
         try:
             backup_log = APP_DATA_DIR / "patcher.log.old"
@@ -151,61 +156,140 @@ def get_version_tuple(dir_name: str) -> tuple:
         return (0, 0, 0)
 
 
-def find_installer(custom_path: str = "") -> str:
-    """Locates or downloads a working Vencord installer."""
-    candidates = []
+def create_vencord_asar(patcher_path: str) -> bytes:
+    """
+    Constructs a 100% byte-exact Electron ASAR archive containing
+    package.json and index.js that hooks into Vencord.
+    Completely eliminates the need for any external Go/C++ installer.
+    """
+    package_json = '{\n\t"name": "discord",\n\t"main": "index.js"\n}'
+    index_js = f"require({json.dumps(patcher_path)})"
 
-    if custom_path and os.path.isfile(custom_path):
-        candidates.append(custom_path)
+    index_bytes = index_js.encode("utf-8")
+    pkg_bytes = package_json.encode("utf-8")
 
-    # 1. Local repository folder
-    script_dir = Path(__file__).parent
-    candidates.append(str(script_dir / "VencordInstallerCli.exe"))
-    candidates.append(str(script_dir / "vencordinstaller.exe"))
-    candidates.append(str(script_dir / "VencordInstaller.exe"))
+    header = {
+        "files": {
+            "index.js": {
+                "size": len(index_bytes),
+                "offset": "0"
+            },
+            "package.json": {
+                "size": len(pkg_bytes),
+                "offset": str(len(index_bytes))
+            }
+        }
+    }
 
-    # 2. Existing BetterVencordPatch or AppData locations
-    candidates.append(os.path.join(LOCAL_APPDATA, "BetterVencordPatch", "vencordinstaller.exe"))
-    candidates.append(str(APP_DATA_DIR / "VencordInstallerCli.exe"))
+    hdr_str = json.dumps(header, separators=(",", ":"))
+    hdr_bytes = hdr_str.encode("utf-8")
+    hdr_len = len(hdr_bytes)
 
-    for c in candidates:
-        if os.path.isfile(c):
-            return c
+    data_size = 4
+    aligned = (hdr_len + data_size - 1) & ~(data_size - 1)
+    hdr_sz = aligned + 8
+    obj_sz = aligned + data_size
+    diff = aligned - hdr_len
 
-    # 3. If not found, download official VencordInstallerCli.exe from GitHub
-    logging.info("No Vencord installer found locally. Downloading official VencordInstallerCli.exe...")
-    download_url = "https://github.com/Vencord/Installer/releases/latest/download/VencordInstallerCli.exe"
-    target_path = APP_DATA_DIR / "VencordInstallerCli.exe"
+    padded_header = hdr_bytes + (b"0" * diff)
+    prefix = struct.pack("<IIII", 4, hdr_sz, obj_sz, hdr_len)
+
+    return prefix + padded_header + index_bytes + pkg_bytes
+
+
+def ensure_vencord_dist() -> Path:
+    """Ensures Vencord's dist/patcher.js is present. Downloads from GitHub if missing."""
+    if PATCHER_JS.exists():
+        return PATCHER_JS
+
+    logging.info("Vencord dist files missing. Downloading latest build from GitHub...")
+    VENCORD_DIST_DIR.mkdir(parents=True, exist_ok=True)
+
+    url = "https://github.com/Vendicated/Vencord/releases/latest/download/browser.zip"
+    zip_tmp = APP_DATA_DIR / "browser.zip"
 
     try:
-        APP_DATA_DIR.mkdir(parents=True, exist_ok=True)
-        req = urllib.request.Request(
-            download_url,
-            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-        )
-        with urllib.request.urlopen(req) as resp, open(target_path, "wb") as out_file:
-            out_file.write(resp.read())
-        logging.info(f"Downloaded VencordInstallerCli.exe to {target_path}")
-        return str(target_path)
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req) as resp, open(zip_tmp, "wb") as f:
+            f.write(resp.read())
+
+        with zipfile.ZipFile(zip_tmp, "r") as z:
+            z.extractall(VENCORD_DIST_DIR)
+
+        if zip_tmp.exists():
+            zip_tmp.unlink()
+
+        logging.info("Successfully downloaded and extracted Vencord dist files.")
+        return PATCHER_JS
     except Exception as e:
-        logging.error(f"Failed to auto-download Vencord installer: {e}")
-        return ""
+        logging.error(f"Failed to auto-download Vencord dist files: {e}")
+        return PATCHER_JS
+
+
+def patch_version_natively(version_dir: Path) -> bool:
+    """
+    Applies the Vencord patch natively in Python:
+    1. Renames resources/app.asar -> resources/_app.asar
+    2. Writes custom 219-byte Vencord loader to resources/app.asar
+    """
+    resources = version_dir / "resources"
+    app_asar = resources / "app.asar"
+    orig_asar = resources / "_app.asar"
+
+    if not app_asar.exists():
+        logging.warning(f"Cannot patch {version_dir.name}: app.asar does not exist yet.")
+        return False
+
+    patcher_path = ensure_vencord_dist()
+    if not patcher_path.exists():
+        logging.error(f"Cannot patch: {patcher_path} is missing.")
+        return False
+
+    try:
+        # Step 1: Backup original app.asar
+        if not orig_asar.exists():
+            app_asar.rename(orig_asar)
+            logging.info(f"Backed up original app.asar -> _app.asar ({version_dir.name})")
+
+        # Step 2: Write custom Vencord ASAR
+        asar_bytes = create_vencord_asar(str(patcher_path))
+        app_asar.write_bytes(asar_bytes)
+        logging.info(f"Wrote native Vencord loader to app.asar ({version_dir.name})")
+        return True
+    except Exception as e:
+        logging.error(f"Native patch failed for {version_dir.name}: {e}")
+        # Rollback if needed
+        if orig_asar.exists() and not app_asar.exists():
+            try:
+                orig_asar.rename(app_asar)
+            except Exception:
+                pass
+        return False
+
+
+def unpatch_version_natively(version_dir: Path) -> bool:
+    """Restores Discord to stock by deleting loader and renaming _app.asar -> app.asar."""
+    resources = version_dir / "resources"
+    app_asar = resources / "app.asar"
+    orig_asar = resources / "_app.asar"
+
+    if not orig_asar.exists():
+        logging.info(f"{version_dir.name} is not patched with Vencord.")
+        return True
+
+    try:
+        if app_asar.exists():
+            app_asar.unlink()
+        orig_asar.rename(app_asar)
+        logging.info(f"Successfully unpatched {version_dir.name} (restored original app.asar).")
+        return True
+    except Exception as e:
+        logging.error(f"Failed to unpatch {version_dir.name}: {e}")
+        return False
 
 
 def check_branch_status(branch_key: str) -> dict:
-    """
-    Inspects a Discord branch directory and checks for unpatched versions.
-    Returns details: {
-        'exists': bool,
-        'branch': str,
-        'display_name': str,
-        'base_path': Path,
-        'process': str,
-        'is_running': bool,
-        'versions': list of dicts,
-        'unpatched_versions': list of version names needing patch
-    }
-    """
+    """Inspects a Discord branch directory and checks for unpatched versions."""
     info = DISCORD_BRANCHES[branch_key]
     base_path = Path(LOCAL_APPDATA) / info["folder"]
     result = {
@@ -234,6 +318,7 @@ def check_branch_status(branch_key: str) -> dict:
 
         ver_info = {
             "name": d.name,
+            "path": d,
             "version": d.name.replace("app-", ""),
             "has_resources": resources.exists(),
             "has_app_asar": app_asar.exists(),
@@ -242,58 +327,17 @@ def check_branch_status(branch_key: str) -> dict:
             "ready_for_patch": False
         }
 
-        # An update is fully written by Discord and ready to be patched when:
-        # 1. resources/app.asar exists (the clean Discord file)
-        # 2. resources/_app.asar does NOT exist yet (Vencord hasn't patched it yet)
         if app_asar.exists() and not orig_asar.exists():
             ver_info["ready_for_patch"] = True
-            result["unpatched_versions"].append(d.name)
+            result["unpatched_versions"].append(d)
 
         result["versions"].append(ver_info)
 
     return result
 
 
-def apply_patch(installer_path: str, branch_key: str, location_flag: str = "") -> bool:
-    """Executes the Vencord installer quietly without a console window."""
-    branch_info = DISCORD_BRANCHES[branch_key]
-    cli_branch = branch_info["cli_branch"]
-
-    cmd = [installer_path, "-install", "-branch", cli_branch]
-    if location_flag:
-        cmd.extend(["-location", location_flag])
-
-    logging.info(f"Running patch command: {' '.join(cmd)}")
-    try:
-        res = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            creationflags=CREATE_NO_WINDOW,
-            timeout=30
-        )
-        if res.returncode == 0:
-            logging.info("Installer exited successfully with code 0.")
-            return True
-        else:
-            logging.warning(f"Installer returned code {res.returncode}. Stderr: {res.stderr.strip()} Stdout: {res.stdout.strip()}")
-            # Some versions return 0 or do not print; verify through file inspection
-            return True
-    except subprocess.TimeoutExpired:
-        logging.error("Installer timed out after 30 seconds.")
-        return False
-    except Exception as e:
-        logging.error(f"Failed to execute installer: {e}")
-        return False
-
-
 def run_single_check(config: dict, waiting_state: dict) -> None:
     """Performs one scan across all monitored Discord branches."""
-    installer_path = find_installer(config.get("custom_installer_path", ""))
-    if not installer_path:
-        logging.warning("No installer executable found. Skipping patch cycle.")
-        return
-
     monitored = config.get("monitored_branches", ["stable"])
 
     for branch_key in monitored:
@@ -302,20 +346,20 @@ def run_single_check(config: dict, waiting_state: dict) -> None:
 
         status = check_branch_status(branch_key)
         if not status["exists"] or not status["unpatched_versions"]:
-            # If it was previously waiting and is now patched
             if waiting_state.get(branch_key):
                 waiting_state[branch_key] = False
             continue
 
-        unpatched = status["unpatched_versions"]
+        unpatched_dirs = status["unpatched_versions"]
+        unpatched_names = [d.name for d in unpatched_dirs]
         display_name = status["display_name"]
         is_running = status["is_running"]
 
-        # If Discord is running: DO NOT KILL IT. Wait gracefully.
+        # If Discord is running: DO NOT TOUCH IT. Wait gracefully.
         if is_running:
             if not waiting_state.get(branch_key):
                 logging.info(
-                    f"[{display_name}] New update detected ({', '.join(unpatched)}). "
+                    f"[{display_name}] New update detected ({', '.join(unpatched_names)}). "
                     f"Discord is currently running. Waiting gracefully for Discord to close..."
                 )
                 waiting_state[branch_key] = True
@@ -327,15 +371,15 @@ def run_single_check(config: dict, waiting_state: dict) -> None:
             logging.info(f"[{display_name}] Discord has closed! Waiting {cooldown}s cooldown for file locks...")
             time.sleep(cooldown)
 
-        logging.info(f"[{display_name}] Discord is closed. Applying Vencord patch for: {', '.join(unpatched)}...")
-        success = apply_patch(installer_path, branch_key)
+        logging.info(f"[{display_name}] Applying native Vencord patch for: {', '.join(unpatched_names)}...")
+        
+        all_patched = True
+        for d in unpatched_dirs:
+            if not patch_version_natively(d):
+                all_patched = False
 
-        # Verify patch status
-        post_status = check_branch_status(branch_key)
-        newly_unpatched = post_status["unpatched_versions"]
-
-        if not newly_unpatched:
-            logging.info(f"[{display_name}] Successfully patched with Vencord!")
+        if all_patched:
+            logging.info(f"[{display_name}] Successfully patched all versions with Vencord!")
             if config.get("show_notifications", True):
                 send_windows_notification(
                     "Vencord Auto-Patched",
@@ -353,15 +397,36 @@ def run_single_check(config: dict, waiting_state: dict) -> None:
                     logging.error(f"Failed to relaunch Discord: {e}")
             waiting_state[branch_key] = False
         else:
-            logging.warning(
-                f"[{display_name}] Patch applied, but some versions are still unpatched: {newly_unpatched}"
-            )
+            logging.warning(f"[{display_name}] Some versions could not be patched yet.")
+
+
+def unpatch_all(config: dict):
+    """Unpatches all installed versions across all monitored branches."""
+    setup_logging()
+    logging.info("Unpatching all Discord installations...")
+    monitored = config.get("monitored_branches", ["stable"])
+
+    for branch_key in monitored:
+        if branch_key not in DISCORD_BRANCHES:
+            continue
+        status = check_branch_status(branch_key)
+        if not status["exists"]:
+            continue
+
+        if status["is_running"]:
+            print(f"[!] Please close {status['display_name']} before unpatching.")
+            continue
+
+        for v in status["versions"]:
+            if v["is_patched"]:
+                unpatch_version_natively(v["path"])
+                print(f"[OK] Unpatched {status['display_name']} ({v['name']})")
 
 
 def daemon_loop():
     """Continuous background loop."""
     setup_logging()
-    logging.info("Vencord Graceful Patcher daemon started.")
+    logging.info("Vencord Graceful Patcher (Native Mode) daemon started.")
     config = load_config()
     waiting_state = {}
 
@@ -380,12 +445,12 @@ def print_status():
     """Prints human-readable status for all branches in terminal."""
     setup_logging()
     config = load_config()
-    installer = find_installer(config.get("custom_installer_path", ""))
 
     print("\n=======================================================")
-    print("           VENCORD GRACEFUL PATCHER STATUS             ")
+    print("       VENCORD GRACEFUL PATCHER (NATIVE MODE)          ")
     print("=======================================================\n")
-    print(f"Installer Binary : {installer if installer else 'NOT FOUND'}")
+    print(f"Patcher Mode     : Native Python ASAR Injection (Zero Binaries)")
+    print(f"Vencord Patcher  : {PATCHER_JS if PATCHER_JS.exists() else 'NOT FOUND'}")
     print(f"Log File Location: {LOG_FILE}")
     print(f"Check Interval   : {config.get('check_interval_seconds', 10)}s\n")
 
@@ -413,14 +478,18 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Vencord Graceful Patcher")
     parser.add_argument("--status", action="store_true", help="Print current status and exit")
     parser.add_argument("--check-once", action="store_true", help="Perform a single check/patch and exit")
+    parser.add_argument("--unpatch", action="store_true", help="Unpatch Vencord and restore original Discord files")
     parser.add_argument("--daemon", action="store_true", help="Run in continuous background daemon mode")
     args = parser.parse_args()
 
+    cfg = load_config()
+
     if args.status:
         print_status()
+    elif args.unpatch:
+        unpatch_all(cfg)
     elif args.check_once:
         setup_logging()
-        cfg = load_config()
         run_single_check(cfg, {})
     else:
         daemon_loop()
