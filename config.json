@@ -2,6 +2,7 @@
   "check_interval_seconds": 10,
   "cooldown_after_close_seconds": 5,
   "show_notifications": true,
+  "enable_stereo_patch": true,
   "relaunch_discord_after_patch": false,
   "custom_installer_path": "",
   "monitored_branches": [

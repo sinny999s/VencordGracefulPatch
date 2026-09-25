@@ -32,6 +32,7 @@ DEFAULT_CONFIG = {
     "check_interval_seconds": 10,
     "cooldown_after_close_seconds": 5,
     "show_notifications": True,
+    "enable_stereo_patch": True,
     "relaunch_discord_after_patch": False,
     "use_native_patcher": True,
     "custom_installer_path": "",
@@ -336,30 +337,61 @@ def check_branch_status(branch_key: str) -> dict:
     return result
 
 
+def get_branch_unpatched_voice(branch_key: str) -> list:
+    """Finds any discord_voice.node in this branch that is ready to be patched."""
+    try:
+        import voice_patcher
+        if branch_key not in DISCORD_BRANCHES:
+            return []
+        branch_folder = Path(LOCAL_APPDATA) / DISCORD_BRANCHES[branch_key]["folder"]
+        if not branch_folder.exists():
+            return []
+        unpatched = []
+        for vnode in branch_folder.glob("app-*/modules/discord_voice-*/discord_voice/discord_voice.node"):
+            v_info = voice_patcher.inspect_voice_module(vnode)
+            if v_info.get("status") in ["UNPATCHED_READY", "UNRECOGNIZED_SIGNATURE"]:
+                unpatched.append(vnode)
+        return unpatched
+    except Exception as e:
+        logging.debug(f"Error checking branch voice: {e}")
+        return []
+
+
 def run_single_check(config: dict, waiting_state: dict) -> None:
     """Performs one scan across all monitored Discord branches."""
     monitored = config.get("monitored_branches", ["stable"])
+    stereo_enabled = config.get("enable_stereo_patch", True)
 
     for branch_key in monitored:
         if branch_key not in DISCORD_BRANCHES:
             continue
 
         status = check_branch_status(branch_key)
-        if not status["exists"] or not status["unpatched_versions"]:
+        if not status["exists"]:
+            continue
+
+        unpatched_dirs = status["unpatched_versions"]
+        unpatched_voice = get_branch_unpatched_voice(branch_key) if stereo_enabled else []
+
+        # If neither Vencord nor Voice needs work, reset waiting state and continue
+        if not unpatched_dirs and not unpatched_voice:
             if waiting_state.get(branch_key):
                 waiting_state[branch_key] = False
             continue
 
-        unpatched_dirs = status["unpatched_versions"]
-        unpatched_names = [d.name for d in unpatched_dirs]
         display_name = status["display_name"]
         is_running = status["is_running"]
 
         # If Discord is running: DO NOT TOUCH IT. Wait gracefully.
         if is_running:
             if not waiting_state.get(branch_key):
+                reasons = []
+                if unpatched_dirs:
+                    reasons.append(f"Vencord: {', '.join(d.name for d in unpatched_dirs)}")
+                if unpatched_voice:
+                    reasons.append(f"Stereo Audio: {len(unpatched_voice)} module(s)")
                 logging.info(
-                    f"[{display_name}] New update detected ({', '.join(unpatched_names)}). "
+                    f"[{display_name}] Update pending ({'; '.join(reasons)}). "
                     f"Discord is currently running. Waiting gracefully for Discord to close..."
                 )
                 waiting_state[branch_key] = True
@@ -371,33 +403,47 @@ def run_single_check(config: dict, waiting_state: dict) -> None:
             logging.info(f"[{display_name}] Discord has closed! Waiting {cooldown}s cooldown for file locks...")
             time.sleep(cooldown)
 
-        logging.info(f"[{display_name}] Applying native Vencord patch for: {', '.join(unpatched_names)}...")
-        
-        all_patched = True
-        for d in unpatched_dirs:
-            if not patch_version_natively(d):
-                all_patched = False
+        # 1. Patch Vencord if needed
+        if unpatched_dirs:
+            logging.info(f"[{display_name}] Applying native Vencord patch for: {', '.join(d.name for d in unpatched_dirs)}...")
+            all_patched = True
+            for d in unpatched_dirs:
+                if not patch_version_natively(d):
+                    all_patched = False
 
-        if all_patched:
-            logging.info(f"[{display_name}] Successfully patched all versions with Vencord!")
-            if config.get("show_notifications", True):
-                send_windows_notification(
-                    "Vencord Auto-Patched",
-                    f"{display_name} updated and was successfully patched with Vencord!"
-                )
-            if config.get("relaunch_discord_after_patch", False):
-                try:
-                    update_exe = status["base_path"] / "Update.exe"
-                    if update_exe.exists():
-                        subprocess.Popen(
-                            [str(update_exe), "--processStart", status["process"]],
-                            creationflags=CREATE_NO_WINDOW
-                        )
-                except Exception as e:
-                    logging.error(f"Failed to relaunch Discord: {e}")
-            waiting_state[branch_key] = False
-        else:
-            logging.warning(f"[{display_name}] Some versions could not be patched yet.")
+            if all_patched:
+                logging.info(f"[{display_name}] Successfully patched all versions with Vencord!")
+                if config.get("show_notifications", True):
+                    send_windows_notification(
+                        "Vencord Auto-Patched",
+                        f"{display_name} updated and was successfully patched with Vencord!"
+                    )
+            else:
+                logging.warning(f"[{display_name}] Some Vencord versions could not be patched yet.")
+
+        # 2. Patch Stereo Voice Module if enabled
+        if stereo_enabled and unpatched_voice:
+            logging.info(f"[{display_name}] Applying dynamic Stereo Voice patch...")
+            try:
+                import voice_patcher
+                for vnode in unpatched_voice:
+                    voice_patcher.patch_voice_module(vnode, notify=config.get("show_notifications", True))
+            except Exception as ve:
+                logging.error(f"Failed to patch voice module: {ve}")
+
+        # Optional relaunch
+        if config.get("relaunch_discord_after_patch", False):
+            try:
+                update_exe = status["base_path"] / "Update.exe"
+                if update_exe.exists():
+                    subprocess.Popen(
+                        [str(update_exe), "--processStart", status["process"]],
+                        creationflags=CREATE_NO_WINDOW
+                    )
+            except Exception as e:
+                logging.error(f"Failed to relaunch Discord: {e}")
+
+        waiting_state[branch_key] = False
 
 
 def unpatch_all(config: dict):
@@ -421,6 +467,14 @@ def unpatch_all(config: dict):
             if v["is_patched"]:
                 unpatch_version_natively(v["path"])
                 print(f"[OK] Unpatched {status['display_name']} ({v['name']})")
+
+    # Also restore stock voice modules
+    try:
+        import voice_patcher
+        for vnode in voice_patcher.find_voice_modules():
+            voice_patcher.unpatch_voice_module(vnode, notify=config.get("show_notifications", True))
+    except Exception as e:
+        logging.debug(f"Voice unpatch error: {e}")
 
 
 def daemon_loop():
@@ -471,6 +525,26 @@ def print_status():
             if not v["has_app_asar"]:
                 state = "DOWNLOADING / INCOMPLETE"
             print(f"    - {v['name']}: {state}")
+
+        if config.get("enable_stereo_patch", True):
+            try:
+                import voice_patcher
+                branch_folder = Path(LOCAL_APPDATA) / DISCORD_BRANCHES[branch_key]["folder"]
+                voice_nodes = list(branch_folder.glob("app-*/modules/discord_voice-*/discord_voice/discord_voice.node"))
+                if voice_nodes:
+                    v_info = voice_patcher.inspect_voice_module(voice_nodes[0])
+                    v_state = v_info.get("status")
+                    if v_state == "PATCHED":
+                        v_str = f"PATCHED (Stereo 2-Ch / 384kbps) [{v_info.get('profile')}]"
+                    elif v_state == "UNPATCHED_READY":
+                        v_str = "UNPATCHED (Original Mono - Ready to patch)"
+                    elif v_state == "UNRECOGNIZED_SIGNATURE":
+                        v_str = "UNRECOGNIZED SIGNATURE (Safe Fail-Safe Active)"
+                    else:
+                        v_str = str(v_state)
+                    print(f"  Voice Engine: {v_str}")
+            except Exception:
+                pass
         print()
 
 

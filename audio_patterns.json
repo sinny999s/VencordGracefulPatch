@@ -1,0 +1,23 @@
+{
+  "name": "Discord Voice Engine Signatures",
+  "description": "Pattern signatures for enabling true stereo (2-channel) and studio bitrate in discord_voice.node",
+  "version": "1.0.0",
+  "profiles": [
+    {
+      "name": "webrtc_opus_encoder_factory_v2",
+      "description": "Discord builds 2026+ (Clang/MSVC vector register layout)",
+      "search_hex": "41 b9 01 00 00 00 41 b8 00 7d 00 00",
+      "replace_hex": "41 b9 02 00 00 00 41 b8 00 dc 05 00",
+      "expected_matches": 2,
+      "details": "Sets Opus default channels to 2 (stereo) and bitrate to 384,000 bps (0x05DC00)"
+    },
+    {
+      "name": "webrtc_opus_encoder_factory_v1",
+      "description": "Legacy Discord builds (pre-2026 stack-allocated struct layout)",
+      "search_hex": "48 c7 40 08 01 00 00 00 48 b9 00 00 00 00 00 7d 00 00",
+      "replace_hex": "48 c7 40 08 02 00 00 00 48 b9 00 00 00 00 00 dc 05 00",
+      "expected_matches": 1,
+      "details": "Sets Opus default channels to 2 (stereo) and bitrate to 384,000 bps"
+    }
+  ]
+}
