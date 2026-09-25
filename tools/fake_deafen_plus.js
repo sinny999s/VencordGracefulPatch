@@ -128,19 +128,30 @@
                 [data-user-id="${currentUserId}"] [class*="avatarSpeaking"],
                 [data-user-id="${currentUserId}"][class*="avatarSpeaking"],
                 [data-user-id="${currentUserId}"] [class*="borderSpeaking"],
-                [data-user-id="${currentUserId}"][class*="borderSpeaking"] {
+                [data-user-id="${currentUserId}"][class*="borderSpeaking"],
+                [class*="voiceUser_"]:has([data-user-id="${currentUserId}"]) [class*="avatar_"],
+                [class*="voiceUser_"]:has([data-user-id="${currentUserId}"]) [class*="speaking"],
+                [class*="voiceUser_"]:has([data-user-id="${currentUserId}"]) [class*="borderSpeaking"],
+                [class*="voiceUser_"]:has([data-user-id="${currentUserId}"]) [class*="avatarSpeaking"],
+                [class*="voiceUser_"]:has(img[src*="${currentUserId}"]) [class*="avatar_"],
+                [class*="voiceUser_"]:has(img[src*="${currentUserId}"]) [class*="speaking"],
+                [class*="voiceUser_"]:has(img[src*="${currentUserId}"]) [class*="avatarSpeaking"] {
                     box-shadow: none !important;
                     border-color: transparent !important;
                     outline: none !important;
+                    stroke: transparent !important;
                 }
             `;
         } else {
             style.textContent = `
                 [class*="avatarWrapper_"] [class*="speaking"],
-                [class*="voiceUser_"][class*="selected_"] [class*="speaking"] {
+                [class*="voiceUser_"][class*="selected_"] [class*="speaking"],
+                [class*="voiceUser_"][class*="selected_"] [class*="avatarSpeaking"],
+                [class*="voiceUser_"][class*="selected_"] [class*="avatar_"] {
                     box-shadow: none !important;
                     border-color: transparent !important;
                     outline: none !important;
+                    stroke: transparent !important;
                 }
             `;
         }
