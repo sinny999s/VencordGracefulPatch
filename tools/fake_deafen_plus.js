@@ -187,6 +187,8 @@
         if (!active) return;
         active = false;
         activeChannelId = null;
+        window.__fakeDeafenActive = false;
+        globalThis.__fakeDeafenActive = false;
         updateSpeakingRingSuppression(false);
         scheduleButtonUpdate();
         showNotification("FakeDeafen+ deactivated (channel changed).");
@@ -275,11 +277,15 @@
             }
             active = true;
             activeChannelId = channelId;
+            window.__fakeDeafenActive = true;
+            globalThis.__fakeDeafenActive = true;
             updateSpeakingRingSuppression(true);
 
             if (!refreshVoiceState(true)) {
                 active = false;
                 activeChannelId = null;
+                window.__fakeDeafenActive = false;
+                globalThis.__fakeDeafenActive = false;
                 updateSpeakingRingSuppression(false);
                 scheduleButtonUpdate();
                 return false;
@@ -289,6 +295,8 @@
         } else {
             active = false;
             activeChannelId = null;
+            window.__fakeDeafenActive = false;
+            globalThis.__fakeDeafenActive = false;
             updateSpeakingRingSuppression(false);
             refreshVoiceState(false);
             playToggleSound(false);
