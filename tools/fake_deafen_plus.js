@@ -133,9 +133,15 @@
                 [class*="voiceUser_"]:has([data-user-id="${currentUserId}"]) [class*="speaking"],
                 [class*="voiceUser_"]:has([data-user-id="${currentUserId}"]) [class*="borderSpeaking"],
                 [class*="voiceUser_"]:has([data-user-id="${currentUserId}"]) [class*="avatarSpeaking"],
+                [class*="voiceUser_"]:has([data-user-id="${currentUserId}"]) [class*="avatar_"][class*="speaking"],
                 [class*="voiceUser_"]:has(img[src*="${currentUserId}"]) [class*="avatar_"],
                 [class*="voiceUser_"]:has(img[src*="${currentUserId}"]) [class*="speaking"],
-                [class*="voiceUser_"]:has(img[src*="${currentUserId}"]) [class*="avatarSpeaking"] {
+                [class*="voiceUser_"]:has(img[src*="${currentUserId}"]) [class*="avatarSpeaking"],
+                [class*="voiceUser_"]:has(img[src*="${currentUserId}"]) [class*="avatar_"][class*="speaking"],
+                [data-is-speaking="true"]:has([data-user-id="${currentUserId}"]),
+                [data-is-speaking="true"]:has([data-user-id="${currentUserId}"]) [class*="avatar_"],
+                [data-is-speaking="true"]:has(img[src*="${currentUserId}"]),
+                [data-is-speaking="true"]:has(img[src*="${currentUserId}"]) [class*="avatar_"] {
                     box-shadow: none !important;
                     border-color: transparent !important;
                     outline: none !important;
