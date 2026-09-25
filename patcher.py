@@ -301,6 +301,20 @@ def patch_voice_index_js(base_path: Path) -> bool:
     return True
 
 
+def is_vencord_loader(asar_path: Path) -> bool:
+    """Checks if an asar file is a Vencord loader rather than stock Discord."""
+    if not asar_path.exists():
+        return False
+    try:
+        # A Vencord loader is a lightweight pointer (< 10 KB) requiring patcher.js
+        if asar_path.stat().st_size > 10240:
+            return False
+        content = asar_path.read_bytes().lower()
+        return b"patcher.js" in content or b"vencord" in content
+    except Exception:
+        return False
+
+
 def patch_version_natively(version_dir: Path) -> bool:
     """
     Applies the Vencord patch natively in Python:
@@ -321,12 +335,27 @@ def patch_version_natively(version_dir: Path) -> bool:
         return False
 
     try:
-        # Step 1: Backup original app.asar
-        if not orig_asar.exists():
-            app_asar.rename(orig_asar)
-            logging.info(f"Backed up original app.asar -> _app.asar ({version_dir.name})")
+        # If app.asar is already a Vencord loader and _app.asar exists, it's already patched
+        if is_vencord_loader(app_asar) and orig_asar.exists():
+            logging.info(f"{version_dir.name} is already natively patched.")
+            return True
 
-        # Step 2: Write custom Vencord ASAR
+        # If app.asar is stock Discord, it MUST become _app.asar.
+        # If a stale _app.asar exists (e.g. from Discord update folder migration),
+        # replace it so _app.asar is the genuine stock asar of this exact version.
+        if not is_vencord_loader(app_asar):
+            if orig_asar.exists():
+                try:
+                    orig_asar.unlink()
+                except Exception as ex:
+                    logging.warning(f"Removing old _app.asar: {ex}")
+            app_asar.rename(orig_asar)
+            logging.info(f"Backed up stock app.asar -> _app.asar ({version_dir.name})")
+        elif not orig_asar.exists():
+            logging.error(f"Cannot patch {version_dir.name}: _app.asar missing and app.asar is already a loader.")
+            return False
+
+        # Step 2: Write custom Vencord ASAR loader
         asar_bytes = create_vencord_asar(str(patcher_path))
         app_asar.write_bytes(asar_bytes)
         logging.info(f"Wrote native Vencord loader to app.asar ({version_dir.name})")
@@ -353,9 +382,10 @@ def unpatch_version_natively(version_dir: Path) -> bool:
         return True
 
     try:
-        if app_asar.exists():
+        if app_asar.exists() and is_vencord_loader(app_asar):
             app_asar.unlink()
-        orig_asar.rename(app_asar)
+        if orig_asar.exists() and not app_asar.exists():
+            orig_asar.rename(app_asar)
         logging.info(f"Successfully unpatched {version_dir.name} (restored original app.asar).")
         return True
     except Exception as e:
@@ -391,6 +421,8 @@ def check_branch_status(branch_key: str) -> dict:
         app_asar = resources / "app.asar"
         orig_asar = resources / "_app.asar"
 
+        is_patched = is_vencord_loader(app_asar) and orig_asar.exists()
+
         ver_info = {
             "name": d.name,
             "path": d,
@@ -398,11 +430,11 @@ def check_branch_status(branch_key: str) -> dict:
             "has_resources": resources.exists(),
             "has_app_asar": app_asar.exists(),
             "has_orig_asar": orig_asar.exists(),
-            "is_patched": orig_asar.exists(),
+            "is_patched": is_patched,
             "ready_for_patch": False
         }
 
-        if app_asar.exists() and not orig_asar.exists():
+        if app_asar.exists() and not is_patched:
             ver_info["ready_for_patch"] = True
             result["unpatched_versions"].append(d)
 
@@ -423,7 +455,7 @@ def get_branch_unpatched_voice(branch_key: str) -> list:
         unpatched = []
         for vnode in branch_folder.glob("app-*/modules/discord_voice-*/discord_voice/discord_voice.node"):
             v_info = voice_patcher.inspect_voice_module(vnode)
-            if v_info.get("status") in ["UNPATCHED_READY", "UNRECOGNIZED_SIGNATURE"]:
+            if v_info.get("status") in ["UNPATCHED_READY"]:
                 unpatched.append(vnode)
         return unpatched
     except Exception as e:
