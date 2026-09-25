@@ -275,29 +275,24 @@ def remove_fake_deafen(dist_dir: Path) -> bool:
 
 
 def patch_voice_index_js(base_path: Path) -> bool:
-    """Ensures setOnSpeakingCallback is hooked in discord_voice/index.js for complete speaking ring suppression."""
+    """Ensures discord_voice/index.js remains stock so speaking detection is never broken."""
     for idx_file in base_path.glob("app-*/modules/discord_voice-*/discord_voice/index.js"):
         try:
             content = idx_file.read_text(encoding="utf-8")
             marker = "__fakeDeafenActive"
             if marker in content:
-                continue
-            target = "setOnSpeakingCallback: (callback) => instance.setOnSpeakingCallback(callback),"
-            replacement = (
-                "setOnSpeakingCallback: (callback) =>\n"
-                "      instance.setOnSpeakingCallback((speaking) => {\n"
-                "        if (global.__fakeDeafenActive || (typeof window !== 'undefined' && window.__fakeDeafenActive)) {\n"
-                "          callback(0);\n"
-                "          return;\n"
-                "        }\n"
-                "        callback(speaking);\n"
-                "      }),"
-            )
-            if target in content:
-                idx_file.write_text(content.replace(target, replacement, 1), encoding="utf-8")
-                logging.info(f"Hooked setOnSpeakingCallback in {idx_file.name}")
+                stock_target = "setOnSpeakingCallback: (callback) => instance.setOnSpeakingCallback(callback),"
+                import re
+                cleaned = re.sub(
+                    r"setOnSpeakingCallback:\s*\(callback\)\s*=>\s*instance\.setOnSpeakingCallback\(\(speaking\)\s*=>\s*\{[\s\S]*?callback\(speaking\);\s*\}\),",
+                    stock_target,
+                    content
+                )
+                if cleaned != content:
+                    idx_file.write_text(cleaned, encoding="utf-8")
+                    logging.info(f"Restored stock setOnSpeakingCallback in {idx_file.name}")
         except Exception as e:
-            logging.error(f"Failed to hook {idx_file}: {e}")
+            logging.error(f"Failed to check {idx_file}: {e}")
     return True
 
 

@@ -146,34 +146,22 @@
         }
     }
 
-    // Intercept Voice WebSocket Opcode 5 (Speaking) so Discord NEVER broadcasts a speaking ring to others
+    // Intercept Main Gateway Opcode 4 (Voice State Update) so Discord reports you as deafened
+    // We intentionally DO NOT suppress Voice Gateway Opcode 5 (Speaking) so that Discord's voice
+    // server actually forwards your voice audio to the other people in the call!
     if (!window._origWebSocketSend) {
         window._origWebSocketSend = WebSocket.prototype.send;
         WebSocket.prototype.send = function (data) {
             let outgoing = data;
-            if (active && typeof outgoing === "string") {
+            if (window.__fakeDeafenActive && typeof outgoing === "string") {
                 try {
                     if (outgoing.charCodeAt(0) === 123) { // starts with '{'
                         const parsed = JSON.parse(outgoing);
-                        let modified = false;
-
-                        // Voice Gateway Opcode 5: Speaking
-                        // Suppress speaking state to 0 so other people NEVER see your speaking ring!
-                        if (parsed.op === 5 && parsed.d) {
-                            if (parsed.d.speaking) {
-                                parsed.d.speaking = 0;
-                                modified = true;
-                            }
-                        }
                         // Main Gateway Opcode 4: Voice State Update
-                        // Enforce self_mute and self_deaf
-                        else if (parsed.op === 4 && parsed.d) {
+                        // Enforce self_mute and self_deaf to appear deafened to everyone else
+                        if (parsed.op === 4 && parsed.d) {
                             parsed.d.self_mute = true;
                             parsed.d.self_deaf = true;
-                            modified = true;
-                        }
-
-                        if (modified) {
                             outgoing = JSON.stringify(parsed);
                         }
                     }
@@ -184,7 +172,7 @@
     }
 
     function deactivateForChannelChange() {
-        if (!active) return;
+        if (!window.__fakeDeafenActive) return;
         active = false;
         activeChannelId = null;
         window.__fakeDeafenActive = false;
@@ -202,7 +190,7 @@
         const original = socket.send;
         const wrapped = function (op, data, ...args) {
             let outgoing = data;
-            if (op === 4 && active && outgoing && typeof outgoing === "object") {
+            if (op === 4 && window.__fakeDeafenActive && outgoing && typeof outgoing === "object") {
                 const nextChannelId = typeof outgoing.channel_id === "string" ? outgoing.channel_id : null;
                 if (!nextChannelId || (activeChannelId && nextChannelId !== activeChannelId)) {
                     deactivateForChannelChange();
