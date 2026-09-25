@@ -51,7 +51,8 @@ set "STARTUP_VBS=%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\Vencord
 echo [*] Registering in Windows Startup...
 (
     echo Set WshShell = CreateObject^("WScript.Shell"^)
-    echo WshShell.Run "pythonw.exe """ ^& "%SCRIPT_PATH%" ^& """ --daemon", 0, False
+    echo cmd = Chr^(34^) ^& "pythonw.exe" ^& Chr^(34^) ^& " " ^& Chr^(34^) ^& "%SCRIPT_PATH%" ^& Chr^(34^) ^& " --daemon"
+    echo WshShell.Run cmd, 0, False
 ) > "%STARTUP_VBS%"
 
 echo [OK] Added startup launcher to:
