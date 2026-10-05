@@ -1,4 +1,4 @@
-# 🎧 Vencord Graceful Patcher (+ True Stereo Voice Engine)
+# 🎧 Vencord Graceful Patcher (+ True Stereo Voice Engine + FakeDeafen+)
 
 [![Python](https://img.shields.io/badge/Python-3.8%2B-blue.svg)](https://www.python.org/)
 [![Platform](https://img.shields.io/badge/Platform-Windows-0078D6.svg)](https://microsoft.com)
@@ -44,24 +44,29 @@ flowchart TD
 3. **Patches When Closed:** The moment you close Discord or shut down your PC, it safely applies the Vencord patch and scans the voice engine.
 4. **Dynamic AOB Voice Scanning:** Searches your *own local* `discord_voice.node` for machine code instructions to enable 2-channel stereo and 384kbps studio bitrate.
 5. **Fail-Safe Protection:** If a major Discord update changes the voice engine assembly, it refuses to touch the file and alerts you via a native notification toast, ensuring Discord **never crashes**.
+6. **Keeps FakeDeafen+ Alive:** Vencord's own updater replaces `renderer.js`; the service notices within seconds and re-adds FakeDeafen+ so it is ready on your next Discord start.
 
 ---
 
 ## 🚀 Features
 
-* ⚡ **100% Standalone & Native:** Does **not** require downloading or compiling Vencord's 12MB Go installer! It constructs the byte-exact Electron ASAR loader natively in Python.
-* 🎙️ **True Stereo & High Bitrate:** Bypasses Discord Desktop's native mono downmixer and Opus 1-channel lock, enabling true 2-channel 384kbps audio.
-* 🛡️ **Fail-Safe Reliability:** If an update isn't recognized, Discord runs safely in stock mode instead of breaking.
+* ⚡ **100% Standalone & Native:** Does **not** require the Vencord installer. It builds the byte-exact Electron ASAR loader in Python, and downloads Vencord's official desktop build (`patcher.js`, `preload.js`, `renderer.js`, `renderer.css`) straight from GitHub if you have never installed Vencord.
+* 🎙️ **True Stereo & High Bitrate:** Bypasses Discord Desktop's native mono downmixer and Opus 1-channel lock, enabling true 2-channel 384kbps audio. A stock `.bak` backup is always kept.
+* 🎧 **FakeDeafen+:** Appear deafened and muted to everyone else while you still hear and talk. Button in the call toolbar next to the microphone, or press **F8** / **Ctrl+Shift+Q**. Auto-deactivates when you switch channels.
+* 🛡️ **Fail-Safe Reliability:** If an update isn't recognized, Discord runs safely in stock mode instead of breaking, and you are told once (not every reboot).
 * 📞 **Zero Voice Call Interruptions:** Never terminates your Discord session while you are active.
 * 📦 **Zero External Dependencies:** Built entirely with Python's standard library (no `pip install` required).
-* 🔕 **100% Invisible Background Execution:** Runs via `pythonw.exe` without command prompt popups.
-* 🔄 **Multi-Branch Support:** Automatically monitors **Discord Stable**, **PTB**, **Canary**, and **Development**.
-* 🔔 **Native Windows Toast Notifications:** Alerts you when an update has been smoothly patched (or debounces alerts if an update needs new signatures).
-* 🛠️ **Status & Unpatch Tools:** Run `status.bat` to inspect patched builds, `stereo_status.bat` for audio engine status, or `unpatch.bat` to restore Discord to vanilla with 1 click.
+* 🔕 **100% Invisible Background Execution:** Runs via `pythonw.exe` without command prompt popups. Only one instance can ever run.
+* 🔄 **Multi-Branch Support:** Automatically monitors **Discord Stable**, **PTB**, **Canary**, and **Development**, and never blocks one branch because another is open.
+* 🔔 **Native Windows Toast Notifications:** Alerts you when an update has been smoothly patched (or if an update needs new signatures).
+* ♻️ **Live Config Reload:** Edit `config.json` and the running service picks the change up on its next check.
+* 🛠️ **Status & Unpatch Tools:** `status.bat`, `stereo_status.bat`, `stop.bat`, `unpatch.bat`, `stereo_unpatch.bat`, `view_logs.bat`.
 
 ---
 
 ## 📥 Installation
+
+**Requirements:** Windows 10/11 and [Python 3.8+](https://www.python.org/downloads/) installed with **"Add python.exe to PATH"** ticked. The Microsoft Store Python stub is detected and rejected by the installer.
 
 1. **Clone or Download** this repository:
    ```bash
@@ -69,13 +74,15 @@ flowchart TD
    ```
 2. Double-click **`install.bat`**.
 
-That's it! The patcher will automatically register in Windows Startup (`shell:startup`) and run silently in the background.
+That's it! The patcher registers itself in Windows Startup (`shell:startup`), starts immediately, and runs silently in the background. If Discord is closed it patches right away; otherwise it waits until you close Discord.
+
+> Already using Vencord? Nothing changes: the patcher reuses your existing `%APPDATA%\Vencord\dist` files and your settings and plugins stay as they are.
 
 ---
 
 ## ⚙️ Configuration (`config.json`)
 
-You can customize behavior by editing `config.json`:
+You can customize behavior by editing `config.json`. The running service reloads it automatically.
 
 ```json
 {
@@ -83,8 +90,8 @@ You can customize behavior by editing `config.json`:
   "cooldown_after_close_seconds": 5,
   "show_notifications": true,
   "enable_stereo_patch": true,
+  "enable_fake_deafen": true,
   "relaunch_discord_after_patch": false,
-  "custom_installer_path": "",
   "monitored_branches": [
     "stable",
     "ptb",
@@ -96,27 +103,56 @@ You can customize behavior by editing `config.json`:
 
 | Setting | Default | Description |
 | :--- | :--- | :--- |
-| `check_interval_seconds` | `10` | How often (in seconds) the background service checks for updates. |
+| `check_interval_seconds` | `10` | How often (in seconds, minimum 5) the background service checks for updates. |
 | `cooldown_after_close_seconds` | `5` | Wait time after Discord exits before patching (ensures file locks are cleared). |
 | `show_notifications` | `true` | Shows a Windows desktop toast when Vencord or Stereo Audio is patched. |
 | `enable_stereo_patch` | `true` | Enables dynamic pattern scanning for true stereo and 384kbps audio in `discord_voice.node`. |
-| `relaunch_discord_after_patch` | `false` | Automatically restarts Discord after patching (leave `false` to respect your workflow). |
+| `enable_fake_deafen` | `true` | Keeps FakeDeafen+ injected into Vencord. Set to `false` to remove it automatically. |
+| `relaunch_discord_after_patch` | `false` | Automatically restarts Discord after a patch was applied (leave `false` to respect your workflow). |
 | `monitored_branches` | `["stable", ...]` | Which Discord release channels to monitor. |
+
+---
+
+## 🎧 Using FakeDeafen+
+
+* Join a voice channel or call, then click the **FakeDeafen+** button next to the microphone in the bottom call toolbar, or press **F8** / **Ctrl+Shift+Q**.
+* While active, everyone else sees you as **deafened and muted** and your speaking ring stays hidden, but you keep hearing them and your microphone keeps transmitting.
+* Toggle again to go back to your real mute/deafen state. Leaving or switching channels turns it off automatically.
+* FakeDeafen+ is added to Vencord's `renderer.js`, so it takes effect the next time Discord starts after installation.
 
 ---
 
 ## 🔍 Checking Status & Tools
 
-* **Check Overall Status:** Double-click `status.bat` to see Vencord and Voice Module state.
+* **Check Overall Status:** Double-click `status.bat` to see the service, Vencord, FakeDeafen+ and voice module state.
 * **Check Stereo Engine:** Double-click `stereo_status.bat` to see MD5, pattern matches, and backup status.
-* **Revert Audio to Stock Mono:** Double-click `stereo_unpatch.bat` to restore the original backup.
-* **View Logs:** Inspect `%LOCALAPPDATA%\VencordGracefulPatch\patcher.log`.
+* **Stop the Service Temporarily:** Double-click `stop.bat` (it starts again at your next login).
+* **Revert Audio to Stock Mono:** Double-click `stereo_unpatch.bat` to restore the original backup. Set `enable_stereo_patch` to `false` first if the service is running, otherwise it will re-apply stereo when Discord is next closed.
+* **Restore Discord to Stock:** Double-click `unpatch.bat`. This stops the service, restores the original `app.asar` and voice module, and removes FakeDeafen+ from Vencord.
+* **View Logs:** Double-click `view_logs.bat` or inspect `%LOCALAPPDATA%\VencordGracefulPatch\patcher.log`.
+
+Command line equivalents:
+
+```
+python patcher.py --status | --check-once | --stop | --unpatch | --daemon
+python voice_patcher.py --status | --patch | --unpatch
+```
+
+---
+
+## 🧪 Running the Tests
+
+The patch logic is covered by unit tests that run on any platform against synthetic Discord installations:
+
+```bash
+python -m unittest discover -s tests -v
+```
 
 ---
 
 ## 🗑️ Uninstallation
 
-Double-click **`uninstall.bat`**. This cleanly terminates the background process and removes the launcher from Windows Startup.
+Double-click **`uninstall.bat`**. This stops the background service, removes the launcher from Windows Startup, and offers to restore Discord to stock in the same step.
 
 ---
 

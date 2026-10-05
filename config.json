@@ -5,7 +5,6 @@
   "enable_stereo_patch": true,
   "enable_fake_deafen": true,
   "relaunch_discord_after_patch": false,
-  "custom_installer_path": "",
   "monitored_branches": [
     "stable",
     "ptb",

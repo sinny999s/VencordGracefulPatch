@@ -19,6 +19,13 @@
     document.getElementById("vc-fake-deafen-tooltip")?.remove();
     document.getElementById("vc-fake-deafen-hide-ring")?.remove();
 
+    // Tear down a previous run so handlers never stack (double toggles would cancel out)
+    try {
+        window.__fakeDeafenPlus?.observer?.disconnect();
+        if (window.__fakeDeafenPlus?.keyHandler) {
+            window.removeEventListener("keydown", window.__fakeDeafenPlus.keyHandler);
+        }
+    } catch (e) {}
     window.__fakeDeafenPlusLoaded = true;
 
     const BUTTON_ID = "vc-fake-deafen-call-btn";
@@ -30,6 +37,9 @@
     let activeChannelId = null;
     let observer = null;
     let pendingButtonFrame = 0;
+    let lastPlacementScan = 0;
+    let rescanTimer = 0;
+    const PLACEMENT_SCAN_INTERVAL_MS = 200;
     let audioContext = null;
     const patchedSockets = new Map();
 
@@ -88,12 +98,12 @@
 
     function getActualMute() {
         const { MediaEngineStore } = getStores();
-        return Boolean(MediaEngineStore?.isMute?.() ?? MediaEngineStore?.isSelfMute?.() ?? false);
+        return Boolean(MediaEngineStore?.isSelfMute?.() ?? MediaEngineStore?.isMute?.() ?? false);
     }
 
     function getActualDeaf() {
         const { MediaEngineStore } = getStores();
-        return Boolean(MediaEngineStore?.isDeaf?.() ?? MediaEngineStore?.isSelfDeaf?.() ?? false);
+        return Boolean(MediaEngineStore?.isSelfDeaf?.() ?? MediaEngineStore?.isDeaf?.() ?? false);
     }
 
     function getSocket() {
@@ -202,9 +212,16 @@
     function patchCurrentSocket() {
         const socket = getSocket();
         if (!socket) return null;
-        if (patchedSockets.has(socket)) return socket;
 
-        const original = socket.send;
+        // Discord re-creates the gateway socket on reconnect and immediately re-sends the
+        // voice state. Patching the class prototype covers every future instance as well.
+        const target = Object.prototype.hasOwnProperty.call(socket, "send")
+            ? socket
+            : (Object.getPrototypeOf(socket) || socket);
+        if (patchedSockets.has(target)) return socket;
+
+        const original = target.send;
+        if (typeof original !== "function") return null;
         const wrapped = function (op, data, ...args) {
             let outgoing = data;
             if (op === 4 && window.__fakeDeafenActive && outgoing && typeof outgoing === "object") {
@@ -221,8 +238,8 @@
         };
 
         try {
-            socket.send = wrapped;
-            patchedSockets.set(socket, { original, wrapped });
+            target.send = wrapped;
+            patchedSockets.set(target, { original, wrapped });
             return socket;
         } catch (e) {
             console.error("[FakeDeafen+] Socket patch failed:", e);
@@ -454,22 +471,49 @@
         return null;
     }
 
-    function scheduleButtonUpdate() {
+    function scheduleButtonUpdate(force = false) {
         if (pendingButtonFrame) return;
         pendingButtonFrame = requestAnimationFrame(() => {
             pendingButtonFrame = 0;
-            updateButton();
+            updateButton(force);
         });
     }
 
-    function updateButton() {
+    function syncButtonState(btn) {
+        btn.setAttribute("aria-label", "FakeDeafen+");
+        btn.setAttribute("aria-pressed", String(active));
+        btn.dataset.active = String(active);
+    }
+
+    function updateButton(force = false) {
         installButtonStyles();
+
+        let btn = document.getElementById(BUTTON_ID);
+
+        // Fast path: the button is still mounted inside the call toolbar, so only its state
+        // needs refreshing. No DOM scan, no forced layout.
+        if (!force && btn && btn.isConnected && btn.parentElement) {
+            syncButtonState(btn);
+            return;
+        }
+
+        // Throttle the (layout-forcing) toolbar scan while Discord's DOM is churning.
+        const now = performance.now();
+        if (!force && now - lastPlacementScan < PLACEMENT_SCAN_INTERVAL_MS) {
+            if (!rescanTimer) {
+                rescanTimer = setTimeout(() => {
+                    rescanTimer = 0;
+                    scheduleButtonUpdate();
+                }, PLACEMENT_SCAN_INTERVAL_MS);
+            }
+            return;
+        }
+        lastPlacementScan = now;
 
         // Ensure old slots from sidebar / account bar are cleaned up
         document.getElementById("vc-fake-deafen-slot")?.remove();
 
         const point = findCenterToolbarPlacement();
-        let btn = document.getElementById(BUTTON_ID);
 
         if (!point) {
             btn?.remove();
@@ -504,9 +548,7 @@
             container.insertBefore(btn, anchor);
         }
 
-        btn.setAttribute("aria-label", "FakeDeafen+");
-        btn.setAttribute("aria-pressed", String(active));
-        btn.dataset.active = String(active);
+        syncButtonState(btn);
     }
 
     function installObserver() {
@@ -517,17 +559,19 @@
     }
 
     // Hotkey listener: F8 or Ctrl+Shift+Q
-    window.addEventListener("keydown", (e) => {
+    const keyHandler = (e) => {
         if (e.key === "F8" && !e.ctrlKey && !e.altKey && !e.shiftKey) {
             e.preventDefault();
             toggleActive();
-        } else if (e.ctrlKey && e.shiftKey && (e.code === "KeyQ" || e.key.toLowerCase() === "q")) {
+        } else if (e.ctrlKey && e.shiftKey && (e.code === "KeyQ" || (e.key || "").toLowerCase() === "q")) {
             e.preventDefault();
             toggleActive();
         }
-    });
+    };
+    window.addEventListener("keydown", keyHandler);
 
     window.toggleFakeDeafen = toggleActive;
+    window.__fakeDeafenPlus = { keyHandler, get observer() { return observer; } };
 
     if (document.readyState === "loading") {
         document.addEventListener("DOMContentLoaded", () => {
